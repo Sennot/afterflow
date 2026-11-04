@@ -292,6 +292,7 @@ namespace {
         std::unordered_set<GameObject*> simulationDisabledObjects;
 
         bool isSimulating = false;
+        unsigned simulationWaveBase = 0;
         bool isInjecting = false;
         bool hasGhostDied = false;
         bool hasGhostHitPortal = false;
@@ -6717,6 +6718,26 @@ finally {
         state.simulationDisabledObjects.clear();
     }
 
+    unsigned circleWaveCount(PlayLayer* gameLayer) {
+        return gameLayer && gameLayer->m_circleWaveArray ? gameLayer->m_circleWaveArray->count() : 0;
+    }
+
+    // ringJump builds its CCCircleWave inline on the real orb, so ghosts leave pulses ahead of the player
+    void clearSimulationWaves(PlayLayer* gameLayer) {
+        auto* waves = gameLayer ? gameLayer->m_circleWaveArray : nullptr;
+        if (!waves) {
+            return;
+        }
+        while (waves->count() > state.simulationWaveBase) {
+            auto* wave = static_cast<CCCircleWave*>(waves->lastObject());
+            unsigned waveCount = waves->count();
+            wave->removeMeAndCleanup();
+            if (waves->count() == waveCount) {
+                waves->removeLastObject();
+            }
+        }
+    }
+
     float orbDistanceSq(PlayerObject* playerObject, RingObject* ringObject) {
         if (!playerObject || !ringObject) {
             return 0.f;
@@ -6769,6 +6790,7 @@ finally {
             return horizonTicks;
         }
         state.isSimulating = true;
+        state.simulationWaveBase = circleWaveCount(gameLayer);
         state.hasGhostDied = false;
         state.hasGhostHitPortal = false;
         state.firstOrbTouchTick = -1;
@@ -6947,6 +6969,7 @@ finally {
             *simulationEnd = SimEnd::StopSearch;
         }
         restoreObjects();
+        clearSimulationWaves(gameLayer);
         state.ghostPlayer1->stopAllActions();
         if (state.ghostPlayer2) {
             state.ghostPlayer2->stopAllActions();
@@ -8319,6 +8342,7 @@ class $modify(BufHardStreak, HardStreak) {
 class $modify(BufEffectGameObject, EffectGameObject) {
     static void onModify(auto& self) {
         (void)self.setHookPriority("EffectGameObject::triggerObject", MOD_HOOK_PRIORITY);
+        (void)self.setHookPriority("EffectGameObject::playTriggerEffect", MOD_HOOK_PRIORITY);
     }
 
     void triggerObject(GJBaseGameLayer* gameLayer, int uniqueId, gd::vector<int> const* remapKeyVector) {
@@ -8326,6 +8350,13 @@ class $modify(BufEffectGameObject, EffectGameObject) {
             return;
         }
         EffectGameObject::triggerObject(gameLayer, uniqueId, remapKeyVector);
+    }
+
+    void playTriggerEffect() {
+        if (state.isSimulating) {
+            return;
+        }
+        EffectGameObject::playTriggerEffect();
     }
 };
 
