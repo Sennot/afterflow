@@ -590,6 +590,9 @@ namespace deep {
         uint8_t mode = 0;
     };
 
+    enum : uint8_t { TICK_PARITY = 8 };
+    constexpr int TRUST_TICKS = 600;
+
     struct Pristine {
         GameObject* gameObject = nullptr;
         EffectGameObject* effectObject = nullptr;
@@ -662,6 +665,7 @@ namespace deep {
         int parityLogged = 0;
         float stallX = 0.f;
         size_t stallTick = 0;
+        uint8_t pendingFlags = 0;
 
         std::vector<Pristine> pristine;
         std::unordered_set<GameObject*> pristineSeen;
@@ -1592,6 +1596,30 @@ namespace deep {
             object->getPositionY());
     }
 
+    std::string nearbyObjects(PlayLayer* layer, PlayerObject* real, PState const& branch) {
+        if (!layer->m_objects) {
+            return "";
+        }
+        CCRect realRect = real->getObjectRect();
+        CCRect branchRect(branch.nodePos.x - branch.width * 0.5f, branch.nodePos.y - branch.height * 0.5f, branch.width, branch.height);
+        CCRect area(realRect.origin.x - 45.f, realRect.origin.y - 45.f, realRect.size.width + 90.f, realRect.size.height + 90.f);
+        std::string text;
+        int listed = 0;
+        for (unsigned index = 0; index < layer->m_objects->count() && listed < 14; ++index) {
+            auto* object = static_cast<GameObject*>(layer->m_objects->objectAtIndex(index));
+            if (!object || object->m_objectType == GameObjectType::Decoration) {
+                continue;
+            }
+            CCRect rect = object->getObjectRect();
+            if (!rect.intersectsRect(area)) {
+                continue;
+            }
+            ++listed;
+            text += fmt::format(" {}{}{}", objectText(object), rect.intersectsRect(realRect) ? "R" : "", rect.intersectsRect(branchRect) ? "B" : "");
+        }
+        return text;
+    }
+
     std::string touchedObjects(PlayerObject* real, PState const& branch) {
         return fmt::format("real ground {} collided {} portal {} | branch ground {} collided {} portal {}", objectText(real->m_lastGroundObject),
             objectText(real->m_collidedObject), objectText(real->m_lastActivatedPortal), objectText(branch.m_lastGroundObject),
@@ -1731,12 +1759,14 @@ namespace deep {
             }
             if (difference > 1e-4) {
                 parityBroken = true;
+                scan.pendingFlags |= TICK_PARITY;
                 ++scan.parityBreaks;
                 scan.parityWorst = std::max(scan.parityWorst, std::min(difference, 999.0));
                 if (scan.parityLogged < 16) {
                     ++scan.parityLogged;
-                    log(fmt::format("parity break at tick {} (x {:.1f}): {} | {}", scan.ticks.size(), layer->m_player1->getPositionX(),
-                        differenceDetail(layer->m_player1, probe.first), touchedObjects(layer->m_player1, probe.first)));
+                    log(fmt::format("parity break at tick {} (x {:.1f}): {} | {} | near:{}", scan.ticks.size(), layer->m_player1->getPositionX(),
+                        differenceDetail(layer->m_player1, probe.first), touchedObjects(layer->m_player1, probe.first),
+                        nearbyObjects(layer, layer->m_player1, probe.first)));
                 }
                 restartSwarm = broadcastCarrierEffects(layer, probe);
             }
@@ -1838,6 +1868,8 @@ namespace deep {
             ++scan.syncs;
         }
 
+        flags |= scan.pendingFlags;
+        scan.pendingFlags = 0;
         recordTick(layer, flags);
         if (scan.swarm) {
             drawTick(static_cast<int>(scan.ticks.size()));
@@ -1936,6 +1968,28 @@ namespace deep {
                 fates[index] = fate;
             }
         }
+        // a dead label is only as good as the swarm around it: drop them near gaps, restarts and parity breaks
+        std::vector<char> trusted(tickCount, 1);
+        {
+            int lastEvent = -1000000;
+            for (int tick = 0; tick < tickCount; ++tick) {
+                if (job.ticks[tick].flags & (TICK_GAP | TICK_RESEED | TICK_PARITY)) {
+                    lastEvent = tick;
+                }
+                if (tick - lastEvent <= TRUST_TICKS) {
+                    trusted[tick] = 0;
+                }
+            }
+            lastEvent = 1000000000;
+            for (int tick = tickCount - 1; tick >= 0; --tick) {
+                if (job.ticks[tick].flags & (TICK_GAP | TICK_RESEED | TICK_PARITY)) {
+                    lastEvent = tick;
+                }
+                if (lastEvent - tick <= TRUST_TICKS) {
+                    trusted[tick] = 0;
+                }
+            }
+        }
         table->xs.reserve(tickCount);
         table->begin.reserve(tickCount + 1);
         std::vector<std::pair<uint64_t, uint8_t>> cells;
@@ -1946,6 +2000,9 @@ namespace deep {
             cells.clear();
             for (uint32_t cell = 0; cell < record.cellCount; ++cell) {
                 uint8_t fate = fates[record.cellBegin + cell];
+                if (fate == FATE_DEAD && !trusted[tick]) {
+                    continue;
+                }
                 if (fate == FATE_VIABLE || fate == FATE_DEAD) {
                     cells.emplace_back(job.keys[record.cellBegin + cell], fate);
                 }
