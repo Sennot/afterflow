@@ -46,7 +46,7 @@ namespace deep {
 
 #define AF_DS_SCALARS(X) \
     X(m_wasTeleported) X(m_fixGravityBug) X(m_reverseSync) X(m_yVelocityBeforeSlope) X(m_dashX) X(m_dashY) \
-    X(m_dashAngle) X(m_dashStartTime) X(m_dashRing) X(m_slopeStartTime) X(m_maybeLastGroundObject) X(m_lastCollisionBottom) \
+    X(m_dashAngle) X(m_dashStartTime) X(m_dashRing) X(m_slopeStartTime) X(m_lastCollisionBottom) \
     X(m_lastCollisionTop) X(m_lastCollisionLeft) X(m_lastCollisionRight) X(m_unk50C) X(m_unk510) X(m_currentSlope2) \
     X(m_preLastGroundObject) X(m_slopeAngle) X(m_slopeSlidingMaybeRotated) X(m_quickCheckpointMode) X(m_collidedObject) X(m_lastGroundObject) \
     X(m_collidingWithLeft) X(m_collidingWithRight) X(m_maybeSavedPlayerFrame) X(m_scaleXRelated2) X(m_groundYVelocity) X(m_yVelocityRelated) \
@@ -78,6 +78,9 @@ namespace deep {
     X(m_stateDartSlide) X(m_stateHitHead) X(m_stateFlipGravity) X(m_gravityMod) X(m_stateForce) X(m_stateForceVector) \
     X(m_affectedByForces) X(m_lastMovedTime) X(m_playerSpeedAC) X(m_fixRobotJump) X(m_inputsLocked) X(m_unkUnused) \
     X(m_isOutOfBounds) X(m_fallStartY) X(m_ignoreDamage) X(m_enable22Changes) X(m_enableImpulseFix)
+
+    // m_maybeLastGroundObject is left out on purpose: despite the binding name it is a CCNode each PlayerObject creates and
+    // retains in init, copying it between players frees another player's node later (heap corruption)
 
     // full physics state of one PlayerObject, every member except owned visuals and identity.
     // members the bindings in use do not have become a dummy char and are skipped when copying
