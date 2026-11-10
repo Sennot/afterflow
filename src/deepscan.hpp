@@ -621,6 +621,7 @@ namespace deep {
 
         std::vector<Node> current;
         std::vector<Node> next;
+        Node probe;
         size_t currentCount = 0;
         size_t nextCount = 0;
         std::unordered_map<uint64_t, int> childMap;
@@ -1293,7 +1294,7 @@ namespace deep {
     }
 
     // steps one branch with one input; returns the child index or -1 when it dies
-    int expand(PlayLayer* layer, Node const& node, int nodeIndex, bool input, float deltaTime) {
+    int expand(PlayLayer* layer, Node const& node, int nodeIndex, bool input, float deltaTime, Node* probe = nullptr) {
         auto* first = g_deepWorker1;
         auto* second = g_deepWorker2;
         bool dual = node.dual && second;
@@ -1333,6 +1334,16 @@ namespace deep {
             first->updateRotation(deltaTime);
             if (dual) {
                 second->updateRotation(deltaTime);
+            }
+            if (probe) {
+                saveState(first, probe->first);
+                probe->dual = dual;
+                if (dual) {
+                    saveState(second, probe->second);
+                }
+                probe->held = input;
+                probe->used = g_deepStep.used;
+                probe->orbs = g_deepStep.orbs;
             }
             Quant quantFirst = quantOf(first);
             Quant quantSecond;
@@ -1568,6 +1579,67 @@ namespace deep {
             real->m_isUpsideDown, branch.m_isUpsideDown, real->m_isOnGround, branch.m_isOnGround, real->m_vehicleSize, branch.m_vehicleSize);
     }
 
+    std::string objectText(GameObject* object) {
+        if (!object) {
+            return "-";
+        }
+        return fmt::format("#{}:t{}@{:.0f},{:.0f}", object->m_objectID, static_cast<int>(object->m_objectType), object->getPositionX(),
+            object->getPositionY());
+    }
+
+    std::string touchedObjects(PlayerObject* real, PState const& branch) {
+        return fmt::format("real ground {} collided {} portal {} | branch ground {} collided {} portal {}", objectText(real->m_lastGroundObject),
+            objectText(real->m_collidedObject), objectText(real->m_lastActivatedPortal), objectText(branch.m_lastGroundObject),
+            objectText(branch.m_collidedObject), objectText(branch.m_lastActivatedPortal));
+    }
+
+    // a trigger changed the real player (gravity, gravity strength, speed, direction, teleport): do the same to every branch
+    void broadcastCarrierEffects(PlayLayer* layer, Node const& probe) {
+        auto* real = layer->m_player1;
+        auto const& branch = probe.first;
+        bool flip = real->m_isUpsideDown != branch.m_isUpsideDown;
+        bool gravityMod = real->m_gravityMod != branch.m_gravityMod;
+        bool speed = std::abs(real->m_playerSpeed - branch.m_playerSpeed) > 1e-4f;
+        bool reverse = real->m_isGoingLeft != branch.m_isGoingLeft;
+        CCPoint jump = real->getPosition() - branch.nodePos;
+        bool teleport = std::abs(jump.x) > 24.f || std::abs(jump.y) > 24.f;
+        if (!flip && !gravityMod && !speed && !reverse && !teleport) {
+            return;
+        }
+        auto* worker = g_deepWorker1;
+        state.isSimulating = true;
+        g_deepStep.stepping = true;
+        for (size_t index = 0; index < analysis.nextCount; ++index) {
+            Node& node = analysis.next[index];
+            if (flip) {
+                loadState(worker, node.first);
+                worker->flipGravity(!worker->m_isUpsideDown, true);
+                saveState(worker, node.first);
+            }
+            if (gravityMod) {
+                node.first.m_gravityMod = real->m_gravityMod;
+            }
+            if (speed) {
+                node.first.m_playerSpeed = real->m_playerSpeed;
+            }
+            if (reverse) {
+                node.first.m_isGoingLeft = real->m_isGoingLeft;
+            }
+            if (teleport) {
+                node.first.nodePos = node.first.nodePos + jump;
+                node.first.m_position = node.first.m_position + jump;
+                node.first.lastPosition = node.first.lastPosition + jump;
+            }
+        }
+        worker->stopAllActions();
+        g_deepStep.stepping = false;
+        state.isSimulating = false;
+        if (analysis.parityLogged < 16) {
+            log(fmt::format("carrier effect sent to {} branches:{}{}{}{}{}", analysis.nextCount, flip ? " gravity" : "", gravityMod ? " gravity-mod" : "",
+                speed ? " speed" : "", reverse ? " reverse" : "", teleport ? " teleport" : ""));
+        }
+    }
+
     void beamStep(PlayLayer* layer, float deltaTime) {
         auto stepStart = std::chrono::steady_clock::now();
         auto& scan = analysis;
@@ -1599,9 +1671,16 @@ namespace deep {
         scan.childMap.clear();
         scan.deathPoints.clear();
         int deaths = 0;
+        // the previous leader holds the carrier's exact state, its keep child is the carrier's exact continuation
+        Node& probe = scan.probe;
+        bool probeAlive = false;
         for (size_t index = 0; index < scan.currentCount; ++index) {
             Node const& node = scan.current[index];
-            int keepChild = expand(layer, node, static_cast<int>(index), node.held, deltaTime);
+            bool isLeader = static_cast<int>(index) == previousLeader;
+            int keepChild = expand(layer, node, static_cast<int>(index), node.held, deltaTime, isLeader ? &probe : nullptr);
+            if (isLeader) {
+                probeAlive = keepChild >= 0;
+            }
             int toggleChild = expand(layer, node, static_cast<int>(index), !node.held, deltaTime);
             deaths += (keepChild < 0) + (toggleChild < 0);
             scan.link0[previousBegin + index] = keepChild < 0 ? LINK_DEAD : static_cast<uint16_t>(keepChild);
@@ -1619,7 +1698,6 @@ namespace deep {
         scan.deaths += static_cast<uint64_t>(deaths);
         scan.lastDeaths = deaths;
 
-        // leader candidates before any reordering
         int leaderChild = -1;
         bool leaderToggled = false;
         if (previousLeader >= 0 && static_cast<size_t>(previousLeader) < scan.currentCount) {
@@ -1635,8 +1713,28 @@ namespace deep {
         }
         scan.leader = leaderChild;
 
-        // dual entered or left by the carrier: give every branch a matching second player
+        // carrier vs its exact continuation: anything left is the real game doing something to the player the branches cannot see
         bool carrierDual = layerIsDual(layer);
+        bool parityBroken = false;
+        if (probeAlive && !leaderToggled) {
+            double difference = stateDifference(layer->m_player1, probe.first);
+            if (probe.dual && layer->m_player2) {
+                difference = std::max(difference, stateDifference(layer->m_player2, probe.second));
+            }
+            if (difference > 1e-4) {
+                parityBroken = true;
+                ++scan.parityBreaks;
+                scan.parityWorst = std::max(scan.parityWorst, std::min(difference, 999.0));
+                if (scan.parityLogged < 16) {
+                    ++scan.parityLogged;
+                    log(fmt::format("parity break at tick {} (x {:.1f}): {} | {}", scan.ticks.size(), layer->m_player1->getPositionX(),
+                        differenceDetail(layer->m_player1, probe.first), touchedObjects(layer->m_player1, probe.first)));
+                }
+                broadcastCarrierEffects(layer, probe);
+            }
+        }
+
+        // dual entered or left by the carrier: give every branch a matching second player
         if (carrierDual != scan.wasDual && scan.nextCount > 0) {
             if (carrierDual) {
                 PState realSecond;
@@ -1659,6 +1757,9 @@ namespace deep {
             }
             rekeyAndMerge(previousBegin);
         }
+        else if (parityBroken) {
+            rekeyAndMerge(previousBegin);
+        }
         scan.wasDual = carrierDual;
 
         uint8_t flags = 0;
@@ -1679,6 +1780,7 @@ namespace deep {
             prune(previousBegin, scan.leader);
         }
 
+        bool switched = leaderChild < 0 || leaderToggled || scan.leader < 0 || static_cast<size_t>(scan.leader) >= scan.nextCount;
         if (scan.leader < 0 || static_cast<size_t>(scan.leader) >= scan.nextCount) {
             // the leader died: follow the branch closest to the carrier
             float carrierY = layer->m_player1->getPositionY();
@@ -1692,35 +1794,21 @@ namespace deep {
                 }
             }
             scan.leader = best;
-            leaderChild = -1;
         }
 
-        // carrier vs leader: identical unless the input changed, the leader switched, or GD did something the branches cannot see
         Node& lead = scan.next[scan.leader];
-        // only a child the leader produced itself with the carrier's input can be compared bit for bit
-        bool continuing = leaderChild >= 0 && !leaderToggled && (flags & TICK_GAP) == 0 && lead.parent == previousLeader &&
-            lead.parentInput == previousLeaderHeld;
-        double difference = stateDifference(layer->m_player1, lead.first);
-        if (lead.dual && layer->m_player2) {
-            difference = std::max(difference, stateDifference(layer->m_player2, lead.second));
-        }
-        if (continuing && difference > 1e-3) {
-            // the real game moved the carrier differently: keep the real state on the leader branch
-            ++scan.parityBreaks;
-            scan.parityWorst = std::max(scan.parityWorst, std::min(difference, 999.0));
-            if (scan.parityLogged < 12) {
-                ++scan.parityLogged;
-                log(fmt::format("parity break at tick {} (x {:.1f}): {}", scan.ticks.size(), layer->m_player1->getPositionX(),
-                    differenceDetail(layer->m_player1, lead.first)));
-            }
+        if (!switched && (flags & TICK_GAP) == 0) {
+            // the leader's cell keeps the carrier's exact state so next tick's comparison is exact again
             saveState(layer->m_player1, lead.first);
             if (lead.dual && layer->m_player2) {
                 saveState(layer->m_player2, lead.second);
             }
             lead.held = previousLeaderHeld;
+            lead.used = probe.used;
+            lead.orbs = probe.orbs;
             lead.key = nodeKey(lead);
         }
-        else if (!continuing && difference > 1e-6) {
+        else if ((flags & TICK_GAP) == 0) {
             loadState(layer->m_player1, lead.first);
             if (lead.dual && layer->m_player2) {
                 loadState(layer->m_player2, lead.second);
