@@ -581,6 +581,18 @@ namespace deep {
         std::vector<GameObject*> orbs;
     };
 
+    // a trigger acted on a real player outside its own collisions: the same GD call is replayed on every branch's player
+    struct Node;
+    uint64_t nodeKey(Node const& node);
+
+    struct PendingEffect {
+        bool second = false;
+        std::function<void(PlayerObject*)> apply;
+    };
+
+    std::vector<PendingEffect> pendingEffects;
+    uint64_t replayedEffects = 0;
+
     struct TickRecord {
         float carrierX = 0.f;
         float carrierY = 0.f;
@@ -684,6 +696,77 @@ namespace deep {
 
     bool isWorker(PlayerObject* player) {
         return player && (player == g_deepWorker1 || player == g_deepWorker2);
+    }
+
+    bool layerIsDual(PlayLayer* layer);
+
+    // which real player a trigger targets: 0 first, 1 second, -1 not a real player of this level
+    int realPlayerIndex(GJBaseGameLayer* layer, PlayerObject* player) {
+        if (!g_deepActive || state.isSimulating || g_inCarrierCollision || !layer || !player || layer != PlayLayer::get()) {
+            return -1;
+        }
+        if (player == layer->m_player1) {
+            return 0;
+        }
+        if (player == layer->m_player2) {
+            return 1;
+        }
+        return -1;
+    }
+
+    void onRealFlip(GJBaseGameLayer* layer, PlayerObject* player, bool flip) {
+        int index = realPlayerIndex(layer, player);
+        if (index < 0 || player->m_isUpsideDown == flip) {
+            return;
+        }
+        pendingEffects.push_back({ index == 1, [layer, flip](PlayerObject* target) { ghostFlipGravity(layer, target, flip); } });
+    }
+
+    void onRealReverse(GJBaseGameLayer* layer, EffectGameObject* object) {
+        if (!g_deepActive || state.isSimulating || g_inCarrierCollision || !object || layer != PlayLayer::get()) {
+            return;
+        }
+        pendingEffects.push_back({ false, [object](PlayerObject* target) { target->reversePlayer(object); } });
+        if (layerIsDual(static_cast<PlayLayer*>(layer))) {
+            pendingEffects.push_back({ true, [object](PlayerObject* target) { target->reversePlayer(object); } });
+        }
+    }
+
+    void onRealTeleport(GJBaseGameLayer* layer, TeleportPortalObject* portal, PlayerObject* player) {
+        int index = realPlayerIndex(layer, player);
+        if (index < 0 || !portal) {
+            return;
+        }
+        pendingEffects.push_back({ index == 1, [layer, portal](PlayerObject* target) { layer->teleportPlayer(portal, target); } });
+    }
+
+    void replayPendingEffects() {
+        if (pendingEffects.empty()) {
+            return;
+        }
+        for (size_t index = 0; index < analysis.currentCount; ++index) {
+            Node& node = analysis.current[index];
+            g_deepStep.dual = node.dual;
+            loadState(g_deepWorker1, node.first);
+            if (node.dual) {
+                loadState(g_deepWorker2, node.second);
+            }
+            for (auto const& effect : pendingEffects) {
+                if (!effect.second) {
+                    effect.apply(g_deepWorker1);
+                }
+                else if (node.dual) {
+                    effect.apply(g_deepWorker2);
+                }
+            }
+            saveState(g_deepWorker1, node.first);
+            if (node.dual) {
+                saveState(g_deepWorker2, node.second);
+            }
+            node.key = nodeKey(node);
+        }
+        replayedEffects += pendingEffects.size();
+        pendingEffects.clear();
     }
 
     PlayerObject* makeWorker(PlayLayer* layer, bool second) {
@@ -1634,7 +1717,7 @@ namespace deep {
         bool flip = real->m_isUpsideDown != branch.m_isUpsideDown;
         bool gravityMod = real->m_gravityMod != branch.m_gravityMod;
         bool speed = std::abs(real->m_playerSpeed - branch.m_playerSpeed) > 1e-4f;
-        bool reverse = real->m_isGoingLeft != branch.m_isGoingLeft;
+        bool reverse = real->m_isGoingLeft != branch.m_isGoingLeft || real->m_isSideways != branch.m_isSideways;
         CCPoint jump = real->getPosition() - branch.nodePos;
         bool teleport = std::abs(jump.x) > 24.f || std::abs(jump.y) > 24.f;
         if (reverse || teleport) {
@@ -1701,6 +1784,7 @@ namespace deep {
         state.firstOrbRingObject = nullptr;
         state.firstOrbPlayerObject = nullptr;
         state.simulationTick = static_cast<int>(scan.ticks.size());
+        replayPendingEffects();
 
         scan.nextCount = 0;
         scan.childMap.clear();
@@ -2042,9 +2126,9 @@ namespace deep {
         job->link0 = std::move(scan.link0);
         job->link1 = std::move(scan.link1);
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - scan.startTime).count();
-        log(fmt::format("scan {} after {} ticks in {} | gaps {} | restarts {} | parity breaks {} (worst {:.4f}) | syncs {} | {} branches",
+        log(fmt::format("scan {} after {} ticks in {} | gaps {} | restarts {} | parity breaks {} (worst {:.4f}) | syncs {} | trigger effects {} | {} branches",
             scan.abort ? "aborted" : scan.reachedEnd ? "reached the end" : "stopped", job->ticks.size(), clockText(elapsed), scan.gaps, scan.reseeds,
-            scan.parityBreaks, scan.parityWorst, scan.syncs, scan.expansions));
+            scan.parityBreaks, scan.parityWorst, scan.syncs, replayedEffects, scan.expansions));
 
         scan.active = false;
         g_deepActive = false;
@@ -2056,6 +2140,7 @@ namespace deep {
         scan.childMap.clear();
         scan.pristine.clear();
         scan.pristineSeen.clear();
+        pendingEffects.clear();
         clearViz();
         // the branch players stay until the level closes: GD keeps raw pointers to players (trails, particles) that only go
         // away with the level, the same lifetime afterflow's own ghosts have
@@ -2146,6 +2231,8 @@ namespace deep {
         scan.currentCount = scan.nextCount = 0;
         scan.pristine.clear();
         scan.pristineSeen.clear();
+        pendingEffects.clear();
+        replayedEffects = 0;
         scan.expansions = scan.deaths = 0;
         scan.gaps = scan.reseeds = scan.parityBreaks = scan.syncs = 0;
         scan.parityWorst = 0.0;
@@ -2389,6 +2476,9 @@ namespace deep {
     bool active() { return false; }
     bool isWorker(PlayerObject*) { return false; }
     void ghostFlipGravity(GJBaseGameLayer*, PlayerObject* player, bool flip) { player->flipGravity(flip, true); }
+    void onRealFlip(GJBaseGameLayer*, PlayerObject*, bool) {}
+    void onRealReverse(GJBaseGameLayer*, EffectGameObject*) {}
+    void onRealTeleport(GJBaseGameLayer*, TeleportPortalObject*, PlayerObject*) {}
     int runtimeBase() { return -1; }
     int label(int, PlayerObject*, PlayerObject*, bool, bool) { return 0; }
     void onLevelInit(PlayLayer*) {}

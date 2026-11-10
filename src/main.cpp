@@ -446,6 +446,7 @@ namespace {
     PlayerObject* g_deepWorker1 = nullptr;
     PlayerObject* g_deepWorker2 = nullptr;
     bool g_deepActive = false;
+    bool g_inCarrierCollision = false;
     int g_deepVerdict = 0;
 
     bool deepListHas(std::vector<GameObject*> const& list, GameObject* gameObject) {
@@ -8727,7 +8728,14 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     }
 
     int checkCollisions(PlayerObject* playerObject, float deltaTime, bool ignoreDamage) {
+        bool isCarrier = g_deepActive && !state.isSimulating && (playerObject == this->m_player1 || playerObject == this->m_player2);
+        if (isCarrier) {
+            g_inCarrierCollision = true;
+        }
         int result = GJBaseGameLayer::checkCollisions(playerObject, deltaTime, ignoreDamage);
+        if (isCarrier) {
+            g_inCarrierCollision = false;
+        }
         if (g_deepActive && !state.isSimulating && playerObject == this->m_player1) {
             if (auto* playLayer = typeinfo_cast<PlayLayer*>(this)) {
                 deep::afterCarrierCollisions(playLayer, deltaTime);
@@ -8952,7 +8960,22 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             return;
         }
+        deep::onRealFlip(this, playerObject, shouldFlip);
         GJBaseGameLayer::flipGravity(playerObject, shouldFlip, suppressEffects);
+    }
+
+    void reverseDirection(EffectGameObject* effectObject) {
+        GJBaseGameLayer::reverseDirection(effectObject);
+        if (!state.isSimulating) {
+            deep::onRealReverse(this, effectObject);
+        }
+    }
+
+    void teleportPlayer(TeleportPortalObject* portalObject, PlayerObject* playerObject) {
+        if (!state.isSimulating) {
+            deep::onRealTeleport(this, portalObject, playerObject);
+        }
+        GJBaseGameLayer::teleportPlayer(portalObject, playerObject);
     }
 
     void toggleDualMode(GameObject* gameObject, bool isDual, PlayerObject* playerObject, bool suppressEffects) {
