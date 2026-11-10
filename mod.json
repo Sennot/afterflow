@@ -8,7 +8,7 @@
   },
   "id": "afterflow.prsevend",
   "name": "Afterflow",
-  "version": "2.2.5",
+  "version": "2.3.0",
   "developer": "prsevend",
   "description": "a predictive input cheat that fixes your early clicks and makes them accurate, with customizable UI colors and a polished control panel.",
   "tags": [
@@ -79,6 +79,90 @@
       "platforms": [
         "win",
         "mac"
+      ]
+    },
+    "deep-title": {
+      "type": "title",
+      "name": "deep scan",
+      "description": "simulate the whole level in place and keep a map of every reachable state for the buffer",
+      "platforms": [
+        "win"
+      ]
+    },
+    "keybind-deep": {
+      "type": "keybind",
+      "name": "deep scan",
+      "description": "start a deep scan of the current level, press again to stop and save",
+      "category": "gameplay",
+      "default": [
+        "F2"
+      ],
+      "platforms": [
+        "win"
+      ]
+    },
+    "keybind-deep-pause": {
+      "type": "keybind",
+      "name": "pause deep scan",
+      "description": "pause or resume a running deep scan",
+      "category": "gameplay",
+      "default": [
+        "F3"
+      ],
+      "platforms": [
+        "win"
+      ]
+    },
+    "deep-beam": {
+      "type": "int",
+      "name": "beam width",
+      "description": "branches kept per tick. more is slower and covers more states",
+      "default": 384,
+      "min": 16,
+      "max": 4000,
+      "platforms": [
+        "win"
+      ]
+    },
+    "deep-budget": {
+      "type": "float",
+      "name": "frame budget (ms)",
+      "description": "time per frame the scan may spend at max speed",
+      "default": 18.0,
+      "min": 2.0,
+      "max": 200.0,
+      "step": 1.0,
+      "platforms": [
+        "win"
+      ]
+    },
+    "deep-swarm": {
+      "type": "bool",
+      "name": "draw branches",
+      "description": "draw the branch swarm while scanning",
+      "default": true,
+      "platforms": [
+        "win"
+      ]
+    },
+    "deep-use": {
+      "type": "bool",
+      "name": "use scan map",
+      "description": "let the buffer judge clicks with the saved map of the level",
+      "default": true,
+      "platforms": [
+        "win"
+      ]
+    },
+    "deep-align": {
+      "type": "int",
+      "name": "alignment margin",
+      "description": "ticks a saved click may move toward the middle of the window the map confirms",
+      "default": 1,
+      "min": 0,
+      "max": 6,
+      "platforms": [
+        "win"
       ]
     },
     "ui-title": {

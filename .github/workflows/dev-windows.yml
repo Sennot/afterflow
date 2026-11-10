@@ -1,0 +1,32 @@
+name: Dev Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - deep-scan
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the mod
+        id: build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: given
+          cli: latest
+          # same bindings commit as the installed Geode 5.11.2 loader
+          bindings-ref: 1605f500d053f8de122bf5c7dc6d17c24866e02e
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afterflow-windows
+          path: ${{ steps.build.outputs.build-output }}

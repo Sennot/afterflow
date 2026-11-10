@@ -435,6 +435,22 @@ namespace {
     bool isCrashFixed = false;
     bool isMarginUsed = false;
 
+    // deep scan branch stepping (see deepscan.hpp): per-branch used objects replace the per-simulation sets
+    struct DeepStepContext {
+        bool stepping = false;
+        std::vector<GameObject*> used;
+        std::vector<GameObject*> orbs;
+        std::vector<GameObject*> snapped;
+    } g_deepStep;
+    PlayerObject* g_deepWorker1 = nullptr;
+    PlayerObject* g_deepWorker2 = nullptr;
+    bool g_deepActive = false;
+    int g_deepVerdict = 0;
+
+    bool deepListHas(std::vector<GameObject*> const& list, GameObject* gameObject) {
+        return std::find(list.begin(), list.end(), gameObject) != list.end();
+    }
+
     void cycleStage(int direction);
     void setStageIndex(int stageIndex);
     void toggleTerminal();
@@ -1445,12 +1461,13 @@ finally {
         });
     }
 
+    // this build is the Sennot fork: only the fork's own version may ask for an update
     constexpr char const* VERSION_URL =
-        "https://raw.githubusercontent.com/afterflow-gd/afterflow/refs/heads/main/version.txt";
+        "https://raw.githubusercontent.com/Sennot/afterflow/refs/heads/main/version.txt";
     constexpr char const* RELEASE_URL_PREFIX =
-        "https://github.com/afterflow-gd/afterflow/releases/tag/";
+        "https://github.com/Sennot/afterflow/releases/tag/";
     constexpr char const* UPDATE_ASSET_URL =
-        "https://github.com/afterflow-gd/afterflow/releases/latest/download/afterflow.prsevend.geode";
+        "https://github.com/Sennot/afterflow/releases/latest/download/afterflow.prsevend.geode";
 
     std::string cleanVersion(std::string versionText) {
         auto isWhitespace = [](char character) {
@@ -2194,7 +2211,8 @@ finally {
     }
 
     bool isGhost(PlayerObject* playerObject) {
-        return playerObject && (playerObject == state.ghostPlayer1 || playerObject == state.ghostPlayer2);
+        return playerObject && (playerObject == state.ghostPlayer1 || playerObject == state.ghostPlayer2 || playerObject == g_deepWorker1 ||
+            playerObject == g_deepWorker2);
     }
 
     void resetPending() {
@@ -6689,10 +6707,21 @@ finally {
     }
 
     void snapshotObject(GameObject* gameObject) {
-        if (!gameObject || state.simulationUsedObjects.contains(gameObject)) {
+        if (!gameObject) {
             return;
         }
-        state.simulationUsedObjects.insert(gameObject);
+        if (g_deepStep.stepping) {
+            if (deepListHas(g_deepStep.snapped, gameObject)) {
+                return;
+            }
+            g_deepStep.snapped.push_back(gameObject);
+        }
+        else {
+            if (state.simulationUsedObjects.contains(gameObject)) {
+                return;
+            }
+            state.simulationUsedObjects.insert(gameObject);
+        }
         ObjSnapshot snapshot { gameObject, gameObject->m_isActivated, nullptr, false, false, false };
         if (auto* effectObject = typeinfo_cast<EffectGameObject*>(gameObject)) {
             snapshot.effectObject = effectObject;
@@ -6716,6 +6745,7 @@ finally {
         state.simulationUsedObjects.clear();
         state.usedOrbs.clear();
         state.simulationDisabledObjects.clear();
+        g_deepStep.snapped.clear();
     }
 
     unsigned circleWaveCount(PlayLayer* gameLayer) {
@@ -6737,6 +6767,8 @@ finally {
             }
         }
     }
+
+#include "deepscan.hpp"
 
     float orbDistanceSq(PlayerObject* playerObject, RingObject* ringObject) {
         if (!playerObject || !ringObject) {
@@ -6844,6 +6876,11 @@ finally {
         int currentTick = 0;
         bool hasDied = false;
         bool isSafe = false;
+        // deep scan map: after the press every ghost state is judged against the whole level
+        int deepBaseTick = state.skipPressHandling ? -1 : deep::runtimeBase();
+        int deepViableStreak = 0;
+        int deepDeadStreak = 0;
+        g_deepVerdict = 0;
 
         for (; currentTick < totalTicks; ++currentTick) {
             state.simulationTick = currentTick;
@@ -6921,6 +6958,30 @@ finally {
             if (state.hasGhostDied) {
                 hasDied = true;
                 break;
+            }
+            if (deepBaseTick >= 0 && currentTick >= delayTicks) {
+                int verdict = deep::label(deepBaseTick + currentTick, state.ghostPlayer1, isSecondPlayer ? state.ghostPlayer2 : nullptr, isSecondPlayer,
+                    state.isHeld1);
+                if (verdict > 0) {
+                    deepDeadStreak = 0;
+                    if (++deepViableStreak >= 2) {
+                        isSafe = true;
+                        g_deepVerdict = 1;
+                        break;
+                    }
+                }
+                else if (verdict < 0) {
+                    deepViableStreak = 0;
+                    if (++deepDeadStreak >= 3) {
+                        hasDied = true;
+                        g_deepVerdict = -1;
+                        break;
+                    }
+                }
+                else {
+                    deepViableStreak = 0;
+                    deepDeadStreak = 0;
+                }
             }
             if (state.hasGhostHitPortal) {
                 isSafe = currentTick >= delayTicks;
@@ -7484,6 +7545,34 @@ finally {
         return 0;
     }
 
+    // with a deep scan map, move the saved input into the middle of the run of delays the map confirms
+    int deepAlign(PlayLayer* playLayer, PlayerObject* player1, PlayerObject* player2, bool isDual, bool isDown, int horizonTicks, int releaseAfterTicks,
+        int savedTick, int maxDelayTicks) {
+        int margin = deep::runtime.alignMargin;
+        if (margin <= 0 || savedTick <= 0 || deep::runtimeBase() < 0) {
+            return savedTick;
+        }
+        SimEnd simulationEnd;
+        RingObject* intendedRing = state.intendedOrbObject;
+        simulateOrbs(playLayer, player1, player2, isDual, savedTick, isDown, horizonTicks, releaseAfterTicks, horizonTicks, &simulationEnd);
+        if (g_deepVerdict <= 0) {
+            return savedTick;
+        }
+        int confirmedRun = 0;
+        for (int extraTicks = 1; extraTicks <= margin * 2 && savedTick + extraTicks <= maxDelayTicks; ++extraTicks) {
+            simulateOrbs(playLayer, player1, player2, isDual, savedTick + extraTicks, isDown, horizonTicks, releaseAfterTicks, horizonTicks, &simulationEnd);
+            if (simulationEnd == SimEnd::StopSearch || g_deepVerdict <= 0 || (isDown && state.pressOrbRingObject != intendedRing)) {
+                break;
+            }
+            confirmedRun = extraTicks;
+        }
+        int shiftTicks = std::min(margin, confirmedRun / 2);
+        if (shiftTicks > 0 && state.explainEnabled) {
+            say("deep align +{}t (map confirms +{}..+{})", shiftTicks, savedTick, savedTick + confirmedRun);
+        }
+        return savedTick + shiftTicks;
+    }
+
     void queueInput(int tickCount, bool isDown) {
         state.queuedInputs.push_back({ tickCount, isDown });
     }
@@ -7706,6 +7795,10 @@ finally {
             return false;
         }
 
+        if (!isCubeStyleWave && !isRobotPress) {
+            savedTick = deepAlign(playLayer, player1, player2, isDual, isDown, horizonTicks, releaseAfterTicks, savedTick, maxDelayTicks);
+        }
+
         if (isDown && !state.skipPressHandling) {
             SimEnd verificationEnd;
             int verificationHorizonTicks = st(8);
@@ -7848,6 +7941,7 @@ $on_mod(Loaded) {
         startCycleWatcher();
     }
     setupKeybinds();
+    deep::setupKeybinds();
     static auto sceneListener = SceneEvent().listen([](CCScene* scene) {
         attachAfterflowOverlay(scene);
     });
@@ -7900,10 +7994,15 @@ class $modify(BufPlayLayer, PlayLayer) {
         (void)self.setHookPriority("PlayLayer::playEndAnimationToPos", MOD_HOOK_PRIORITY);
         (void)self.setHookPriority("PlayLayer::pauseGame", MOD_HOOK_PRIORITY);
         (void)self.setHookPriority("PlayLayer::resume", MOD_HOOK_PRIORITY);
+        (void)self.setHookPriority("PlayLayer::levelComplete", MOD_HOOK_PRIORITY);
+        (void)self.setHookPriority("PlayLayer::updateAttempts", MOD_HOOK_PRIORITY);
     }
 
     void destroyPlayer(PlayerObject* playerObject, GameObject* gameObject) {
-
+        // deep scan carrier is noclip
+        if (deep::blockRealDeath(this, playerObject, gameObject)) {
+            return;
+        }
         if (state.isSimulating || isGhost(playerObject)) {
             if (state.isSimulating) {
                 state.hasGhostDied = true;
@@ -7932,6 +8031,7 @@ class $modify(BufPlayLayer, PlayLayer) {
         state.ghostPlayer2 = makeGhost(this);
         state.ghostLayerBaseIndex = state.ghostRenderLayer->getChildrenCount();
         say("buffer ready | {} | {} cycles", stageText(), stageKey());
+        deep::onLevelInit(this);
         checkForUpdates(false);
         state.hasRealInput = false;
         state.hasAppliedInput = false;
@@ -7946,6 +8046,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void onQuit() {
+        deep::onLevelQuit(this);
         resetPending();
         dropGhosts();
         PlayLayer::onQuit();
@@ -7956,7 +8057,22 @@ class $modify(BufPlayLayer, PlayLayer) {
         forgetPress();
         state.hasAppliedInput = false;
         state.wasAutoReleased = false;
+        deep::onResetLevel();
         PlayLayer::resetLevel();
+    }
+
+    void levelComplete() {
+        if (state.isSimulating || deep::interceptEnd()) {
+            return;
+        }
+        PlayLayer::levelComplete();
+    }
+
+    void updateAttempts() {
+        if (deep::suppressAttempts()) {
+            return;
+        }
+        PlayLayer::updateAttempts();
     }
 
     void pauseGame(bool isUnfocused) {
@@ -7980,7 +8096,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void playEndAnimationToPos(CCPoint targetPosition) {
-        if (state.isSimulating) {
+        if (state.isSimulating || deep::interceptEnd()) {
             return;
         }
         PlayLayer::playEndAnimationToPos(targetPosition);
@@ -8405,7 +8521,8 @@ class $modify(BufPlayerObject, PlayerObject) {
         auto* gameLayer = GameManager::get()->m_playLayer;
         if (gameLayer && this == gameLayer->m_player1 && !gameLayer->m_isPaused) {
             ++currentTick;
-            if (state.isEnabled) {
+            deep::onRealUpdateBegin(this);
+            if (state.isEnabled && !deep::active()) {
                 deliverPending(gameLayer, this);
             }
         }
@@ -8431,7 +8548,7 @@ class $modify(BufPlayerObject, PlayerObject) {
     }
 
     void incrementJumps() {
-        if (state.isSimulating) {
+        if (state.isSimulating || deep::active()) {
             return;
         }
         PlayerObject::incrementJumps();
@@ -8534,7 +8651,8 @@ class $modify(BufPlayerObject, PlayerObject) {
             if (!state.smartEnabled || !isGhost(this)) {
                 return;
             }
-            if (state.usedOrbs.contains(ringObject)) {
+            bool isDeepBranch = g_deepStep.stepping;
+            if (isDeepBranch ? deepListHas(g_deepStep.orbs, ringObject) : state.usedOrbs.contains(ringObject)) {
                 return;
             }
             snapshotObject(ringObject);
@@ -8544,7 +8662,12 @@ class $modify(BufPlayerObject, PlayerObject) {
             bool isDashing = m_isDashing;
             PlayerObject::ringJump(ringObject, skipCollisionCheck);
             if (m_yVelocity != verticalVelocity || m_isUpsideDown != isUpsideDown || m_isDashing != isDashing) {
-                state.usedOrbs.insert(ringObject);
+                if (isDeepBranch) {
+                    g_deepStep.orbs.push_back(ringObject);
+                }
+                else {
+                    state.usedOrbs.insert(ringObject);
+                }
                 if (state.orbUseTick < 0) {
                     state.orbUseTick = state.simulationTick;
                 }
@@ -8560,7 +8683,12 @@ class $modify(BufPlayerObject, PlayerObject) {
 
     void startDashing(DashRingObject* dashRing) {
         if (state.isSimulating && isGhost(this)) {
-            state.usedOrbs.insert(dashRing);
+            if (g_deepStep.stepping) {
+                g_deepStep.orbs.push_back(dashRing);
+            }
+            else {
+                state.usedOrbs.insert(dashRing);
+            }
             if (state.orbUseTick < 0) {
                 state.orbUseTick = state.simulationTick;
             }
@@ -8581,12 +8709,47 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         (void)self.setHookPriority("GJBaseGameLayer::flipGravity", MOD_HOOK_PRIORITY);
         (void)self.setHookPriority("GJBaseGameLayer::gameEventTriggered", MOD_HOOK_PRIORITY);
         (void)self.setHookPriority("GJBaseGameLayer::playerWillSwitchMode", MOD_HOOK_PRIORITY);
+        (void)self.setHookPriority("GJBaseGameLayer::update", MOD_HOOK_PRIORITY);
+        (void)self.setHookPriority("GJBaseGameLayer::checkCollisions", MOD_HOOK_PRIORITY);
+    }
+
+    void update(float deltaTime) {
+        // the deep scan runs many physics steps per frame and holds the level while it pauses or saves
+        if (deep::driveUpdate(this, deltaTime, [this](float frameDelta) { GJBaseGameLayer::update(frameDelta); })) {
+            return;
+        }
+        GJBaseGameLayer::update(deltaTime);
+    }
+
+    int checkCollisions(PlayerObject* playerObject, float deltaTime, bool ignoreDamage) {
+        int result = GJBaseGameLayer::checkCollisions(playerObject, deltaTime, ignoreDamage);
+        if (g_deepActive && !state.isSimulating && playerObject == this->m_player1) {
+            if (auto* playLayer = typeinfo_cast<PlayLayer*>(this)) {
+                deep::afterCarrierCollisions(playLayer, deltaTime);
+            }
+        }
+        return result;
     }
 
     bool canBeActivatedByPlayer(PlayerObject* playerObject, EffectGameObject* effectObject) {
         if (state.isSimulating) {
             if (!state.smartEnabled || !isGhost(playerObject) || !effectObject) {
                 return false;
+            }
+            if (g_deepStep.stepping) {
+                if (typeinfo_cast<RingObject*>(effectObject)) {
+                    if (deepListHas(g_deepStep.orbs, effectObject)) {
+                        return false;
+                    }
+                    snapshotObject(effectObject);
+                    return true;
+                }
+                if (deepListHas(g_deepStep.used, effectObject)) {
+                    return false;
+                }
+                snapshotObject(effectObject);
+                g_deepStep.used.push_back(effectObject);
+                return true;
             }
 
             if (typeinfo_cast<RingObject*>(effectObject)) {
@@ -8601,6 +8764,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             snapshotObject(effectObject);
             return true;
+        }
+        if (g_deepActive) {
+            deep::recordCarrierCheck(effectObject);
         }
         return GJBaseGameLayer::canBeActivatedByPlayer(playerObject, effectObject);
     }
@@ -8617,6 +8783,10 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         }
 
         uint64_t keptTypesMask = state.smartEnabled ? (COLLIDING_OBJECT_TYPES | INTERACTABLE_OBJECT_TYPES) : COLLIDING_OBJECT_TYPES;
+        if (g_deepStep.stepping) {
+            // deep scan branches go through mode and teleport portals with GD's own code; dual is mirrored from the carrier
+            keptTypesMask |= MODE_PORTAL_OBJECT_TYPES & ~(typeBit(GameObjectType::DualPortal) | typeBit(GameObjectType::SoloPortal));
+        }
         bool hasRectangle = false;
         CCRect ghostRectangle;
         auto& objectList = *gameObjects;
@@ -8679,6 +8849,9 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     }
 
     void handleButton(bool isDown, int buttonId, bool isFirstPlayer) {
+        if (g_deepActive && !state.isInjecting) {
+            return;
+        }
         if (!state.isSimulating && buttonId == 1 && !state.isInjecting) {
             auto* player1 = this->m_player1;
             recordRealInput(isDown, player1);
