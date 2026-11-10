@@ -251,6 +251,36 @@ namespace deep {
         return found != player->m_holdingButtons.end() && found->second;
     }
 
+    // GJBaseGameLayer::flipGravity for ghosts: the player flips, and in dual GD flips the partner the other way when both share a mode
+    void ghostFlipGravity(GJBaseGameLayer* layer, PlayerObject* player, bool flip) {
+        if (player->m_isUpsideDown == flip) {
+            return;
+        }
+        player->flipGravity(flip, true);
+        if (!g_deepStep.stepping || !g_deepStep.dual || !layer) {
+            return;
+        }
+        PlayerObject* partner = player == g_deepWorker1 ? g_deepWorker2 : player == g_deepWorker2 ? g_deepWorker1 : nullptr;
+        if (!partner) {
+            return;
+        }
+        // raw 2.2081 windows offsets read by GJBaseGameLayer::flipGravity (0x212b00): an unlink flag in the game state,
+        // m_gameState.m_isDualMode and the level settings' unlink option
+        auto const* base = reinterpret_cast<uint8_t const*>(layer);
+        if (base[0x860] != 0 || base[0x422] == 0) {
+            return;
+        }
+        auto const* settings = *reinterpret_cast<uint8_t const* const*>(base + 0xdb0);
+        if (settings && settings[0x154] != 0) {
+            return;
+        }
+        if (partner->m_isShip != player->m_isShip || partner->m_isBall != player->m_isBall || partner->m_isBird != player->m_isBird ||
+            partner->m_isSpider != player->m_isSpider || partner->m_isRobot != player->m_isRobot || partner->m_isSwing != player->m_isSwing) {
+            return;
+        }
+        partner->flipGravity(!flip, true);
+    }
+
     void resetLogs(PlayerObject* player) {
         player->m_collisionLogTop->removeAllObjects();
         player->m_collisionLogBottom->removeAllObjects();
@@ -1270,6 +1300,7 @@ namespace deep {
         g_deepStep.used = node.used;
         g_deepStep.orbs = node.orbs;
         g_deepStep.snapped.clear();
+        g_deepStep.dual = dual;
         state.hasGhostDied = false;
         state.hasGhostHitPortal = false;
         state.isHeld1 = state.isHeld2 = input;
@@ -2164,6 +2195,7 @@ namespace deep {
 
     bool active() { return false; }
     bool isWorker(PlayerObject*) { return false; }
+    void ghostFlipGravity(GJBaseGameLayer*, PlayerObject* player, bool flip) { player->flipGravity(flip, true); }
     int runtimeBase() { return -1; }
     int label(int, PlayerObject*, PlayerObject*, bool, bool) { return 0; }
     void onLevelInit(PlayLayer*) {}

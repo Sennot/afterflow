@@ -438,6 +438,7 @@ namespace {
     // deep scan branch stepping (see deepscan.hpp): per-branch used objects replace the per-simulation sets
     struct DeepStepContext {
         bool stepping = false;
+        bool dual = false;
         std::vector<GameObject*> used;
         std::vector<GameObject*> orbs;
         std::vector<GameObject*> snapped;
@@ -8785,12 +8786,29 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
         if (static_cast<int>(relevantObjects.capacity()) < gameObjectCount) {
             relevantObjects.reserve(gameObjectCount);
         }
+        if (g_deepStep.stepping) {
+            // deep scan branches see every object the real player sees; dual changes are mirrored from the carrier and
+            // pickups / breakables are left out because nothing can undo them
+            constexpr uint64_t DEEP_SKIPPED_TYPES = typeBit(GameObjectType::DualPortal) | typeBit(GameObjectType::SoloPortal) |
+                typeBit(GameObjectType::SecretCoin) | typeBit(GameObjectType::UserCoin) | typeBit(GameObjectType::Collectible) |
+                typeBit(GameObjectType::Breakable);
+            auto& deepObjects = *gameObjects;
+            for (int index = 0; index < gameObjectCount; ++index) {
+                auto* gameObject = deepObjects[index];
+                if (!gameObject) {
+                    continue;
+                }
+                auto objectType = static_cast<unsigned>(gameObject->m_objectType);
+                if (objectType < 64 && (DEEP_SKIPPED_TYPES >> objectType) & 1) {
+                    continue;
+                }
+                relevantObjects.push_back(gameObject);
+            }
+            GJBaseGameLayer::collisionCheckObjects(playerObject, &relevantObjects, static_cast<int>(relevantObjects.size()), deltaTime);
+            return;
+        }
 
         uint64_t keptTypesMask = state.smartEnabled ? (COLLIDING_OBJECT_TYPES | INTERACTABLE_OBJECT_TYPES) : COLLIDING_OBJECT_TYPES;
-        if (g_deepStep.stepping) {
-            // deep scan branches go through mode and teleport portals with GD's own code; dual is mirrored from the carrier
-            keptTypesMask |= MODE_PORTAL_OBJECT_TYPES & ~(typeBit(GameObjectType::DualPortal) | typeBit(GameObjectType::SoloPortal));
-        }
         bool hasRectangle = false;
         CCRect ghostRectangle;
         auto& objectList = *gameObjects;
@@ -8930,11 +8948,32 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     void flipGravity(PlayerObject* playerObject, bool shouldFlip, bool suppressEffects) {
         if (state.isSimulating) {
             if (state.smartEnabled && isGhost(playerObject)) {
-                playerObject->flipGravity(shouldFlip, true);
+                deep::ghostFlipGravity(this, playerObject, shouldFlip);
             }
             return;
         }
         GJBaseGameLayer::flipGravity(playerObject, shouldFlip, suppressEffects);
+    }
+
+    void toggleDualMode(GameObject* gameObject, bool isDual, PlayerObject* playerObject, bool suppressEffects) {
+        if (state.isSimulating) {
+            return;
+        }
+        GJBaseGameLayer::toggleDualMode(gameObject, isDual, playerObject, suppressEffects);
+    }
+
+    void toggleFlipped(bool isFlipped, bool suppressEffects) {
+        if (state.isSimulating) {
+            return;
+        }
+        GJBaseGameLayer::toggleFlipped(isFlipped, suppressEffects);
+    }
+
+    void destroyObject(GameObject* gameObject) {
+        if (state.isSimulating) {
+            return;
+        }
+        GJBaseGameLayer::destroyObject(gameObject);
     }
 
     void gameEventTriggered(GJGameEvent gameEvent, int materialId, int playerId) {
