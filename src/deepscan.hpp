@@ -642,6 +642,7 @@ namespace deep {
         uint64_t expansions = 0;
         uint64_t deaths = 0;
         int gaps = 0;
+        int reseeds = 0;
         int parityBreaks = 0;
         double parityWorst = 0.0;
         int syncs = 0;
@@ -1215,8 +1216,8 @@ namespace deep {
             double remaining = progress > 0.001f ? elapsed * (1.0 - progress) / progress : -1.0;
             lines[0] = fmt::format("progress {:5.1f}%   tick {}   {}{}", progress * 100.f, tick, modeName(mode),
                 scan.wasDual ? " dual" : "");
-            lines[1] = fmt::format("beam {}/{}   deaths {}/t   gaps {}", scan.nextCount ? scan.nextCount : scan.currentCount, scan.beamWidth,
-                scan.lastDeaths, scan.gaps);
+            lines[1] = fmt::format("beam {}/{}   deaths {}/t   gaps {}   restarts {}", scan.nextCount ? scan.nextCount : scan.currentCount,
+                scan.beamWidth, scan.lastDeaths, scan.gaps, scan.reseeds);
             lines[2] = fmt::format("speed {:.1f}x   {:.0f} t/s   step {:.2f}ms", speedX, scan.ticksPerSecond, scan.lastStepMs);
             lines[3] = fmt::format("cells {}   branches {}   syncs {}", countText(scan.keys.size()), countText(scan.expansions), scan.syncs);
             lines[4] = fmt::format("parity {} ({:.4f})   {} / eta {}", scan.parityBreaks, scan.parityWorst, clockText(elapsed),
@@ -1597,8 +1598,9 @@ namespace deep {
             objectText(branch.m_collidedObject), objectText(branch.m_lastActivatedPortal));
     }
 
-    // a trigger changed the real player (gravity, gravity strength, speed, direction, teleport): do the same to every branch
-    void broadcastCarrierEffects(PlayLayer* layer, Node const& probe) {
+    // a trigger changed the real player: gravity flips, gravity strength and speed are copied to every branch exactly.
+    // returns true for changes that cannot be copied (smooth reverse turns, teleports): the swarm restarts from the carrier
+    bool broadcastCarrierEffects(PlayLayer* layer, Node const& probe) {
         auto* real = layer->m_player1;
         auto const& branch = probe.first;
         bool flip = real->m_isUpsideDown != branch.m_isUpsideDown;
@@ -1607,15 +1609,21 @@ namespace deep {
         bool reverse = real->m_isGoingLeft != branch.m_isGoingLeft;
         CCPoint jump = real->getPosition() - branch.nodePos;
         bool teleport = std::abs(jump.x) > 24.f || std::abs(jump.y) > 24.f;
-        if (!flip && !gravityMod && !speed && !reverse && !teleport) {
-            return;
+        if (reverse || teleport) {
+            if (analysis.parityLogged < 16) {
+                log(fmt::format("carrier {}: restarting the swarm from the carrier", reverse ? "reversed" : "teleported"));
+            }
+            return true;
+        }
+        if (!flip && !gravityMod && !speed) {
+            return false;
         }
         auto* worker = g_deepWorker1;
         state.isSimulating = true;
         g_deepStep.stepping = true;
         for (size_t index = 0; index < analysis.nextCount; ++index) {
             Node& node = analysis.next[index];
-            if (flip || speed || reverse) {
+            if (flip || speed) {
                 loadState(worker, node.first);
                 if (flip) {
                     worker->flipGravity(!worker->m_isUpsideDown, true);
@@ -1623,27 +1631,20 @@ namespace deep {
                 if (speed) {
                     worker->updateTimeMod(real->m_playerSpeed, true);
                 }
-                if (reverse && worker->m_isGoingLeft != real->m_isGoingLeft) {
-                    worker->doReversePlayer(real->m_isGoingLeft);
-                }
                 saveState(worker, node.first);
             }
             if (gravityMod) {
                 node.first.m_gravityMod = real->m_gravityMod;
-            }
-            if (teleport) {
-                node.first.nodePos = node.first.nodePos + jump;
-                node.first.m_position = node.first.m_position + jump;
-                node.first.lastPosition = node.first.lastPosition + jump;
             }
         }
         worker->stopAllActions();
         g_deepStep.stepping = false;
         state.isSimulating = false;
         if (analysis.parityLogged < 16) {
-            log(fmt::format("carrier effect sent to {} branches:{}{}{}{}{}", analysis.nextCount, flip ? " gravity" : "", gravityMod ? " gravity-mod" : "",
-                speed ? " speed" : "", reverse ? " reverse" : "", teleport ? " teleport" : ""));
+            log(fmt::format("carrier effect sent to {} branches:{}{}{}", analysis.nextCount, flip ? " gravity" : "", gravityMod ? " gravity-mod" : "",
+                speed ? " speed" : ""));
         }
+        return false;
     }
 
     void beamStep(PlayLayer* layer, float deltaTime) {
@@ -1722,6 +1723,7 @@ namespace deep {
         // carrier vs its exact continuation: anything left is the real game doing something to the player the branches cannot see
         bool carrierDual = layerIsDual(layer);
         bool parityBroken = false;
+        bool restartSwarm = false;
         if (probeAlive && !leaderToggled) {
             double difference = stateDifference(layer->m_player1, probe.first);
             if (probe.dual && layer->m_player2) {
@@ -1736,7 +1738,7 @@ namespace deep {
                     log(fmt::format("parity break at tick {} (x {:.1f}): {} | {}", scan.ticks.size(), layer->m_player1->getPositionX(),
                         differenceDetail(layer->m_player1, probe.first), touchedObjects(layer->m_player1, probe.first)));
                 }
-                broadcastCarrierEffects(layer, probe);
+                restartSwarm = broadcastCarrierEffects(layer, probe);
             }
         }
 
@@ -1769,7 +1771,20 @@ namespace deep {
         scan.wasDual = carrierDual;
 
         uint8_t flags = 0;
-        if (scan.nextCount == 0) {
+        if (restartSwarm && scan.nextCount > 0) {
+            // keep what was learned up to here as unknown and continue from the carrier's real state
+            for (size_t index = 0; index < scan.currentCount; ++index) {
+                scan.link0[previousBegin + index] = LINK_WIPE;
+                scan.link1[previousBegin + index] = LINK_WIPE;
+            }
+            scan.nextCount = 0;
+            seedNode(allocateNext(), layer);
+            scan.leader = 0;
+            leaderChild = 0;
+            ++scan.reseeds;
+            flags |= TICK_RESEED;
+        }
+        else if (scan.nextCount == 0) {
             // every branch died: either the level really needs something the swarm never tried, or the scan lost track.
             // nothing here is marked dead, the swarm restarts from the carrier
             for (size_t index = 0; index < scan.currentCount; ++index) {
@@ -1786,7 +1801,8 @@ namespace deep {
             prune(previousBegin, scan.leader);
         }
 
-        bool switched = leaderChild < 0 || leaderToggled || scan.leader < 0 || static_cast<size_t>(scan.leader) >= scan.nextCount;
+        bool switched = leaderChild < 0 || leaderToggled || scan.leader < 0 || static_cast<size_t>(scan.leader) >= scan.nextCount ||
+            (flags & TICK_RESEED) != 0;
         if (scan.leader < 0 || static_cast<size_t>(scan.leader) >= scan.nextCount) {
             // the leader died: follow the branch closest to the carrier
             float carrierY = layer->m_player1->getPositionY();
@@ -1814,7 +1830,7 @@ namespace deep {
             lead.orbs = probe.orbs;
             lead.key = nodeKey(lead);
         }
-        else if ((flags & TICK_GAP) == 0) {
+        else if ((flags & (TICK_GAP | TICK_RESEED)) == 0) {
             loadState(layer->m_player1, lead.first);
             if (lead.dual && layer->m_player2) {
                 loadState(layer->m_player2, lead.second);
@@ -1969,9 +1985,9 @@ namespace deep {
         job->link0 = std::move(scan.link0);
         job->link1 = std::move(scan.link1);
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - scan.startTime).count();
-        log(fmt::format("scan {} after {} ticks in {} | gaps {} | parity breaks {} (worst {:.4f}) | syncs {} | {} branches", scan.abort ? "aborted" :
-            scan.reachedEnd ? "reached the end" : "stopped", job->ticks.size(), clockText(elapsed), scan.gaps, scan.parityBreaks, scan.parityWorst,
-            scan.syncs, scan.expansions));
+        log(fmt::format("scan {} after {} ticks in {} | gaps {} | restarts {} | parity breaks {} (worst {:.4f}) | syncs {} | {} branches",
+            scan.abort ? "aborted" : scan.reachedEnd ? "reached the end" : "stopped", job->ticks.size(), clockText(elapsed), scan.gaps, scan.reseeds,
+            scan.parityBreaks, scan.parityWorst, scan.syncs, scan.expansions));
 
         scan.active = false;
         g_deepActive = false;
@@ -2074,7 +2090,7 @@ namespace deep {
         scan.pristine.clear();
         scan.pristineSeen.clear();
         scan.expansions = scan.deaths = 0;
-        scan.gaps = scan.parityBreaks = scan.syncs = 0;
+        scan.gaps = scan.reseeds = scan.parityBreaks = scan.syncs = 0;
         scan.parityWorst = 0.0;
         scan.parityLogged = 0;
         scan.lastProgressDecile = -1;
