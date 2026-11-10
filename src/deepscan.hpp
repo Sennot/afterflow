@@ -701,9 +701,11 @@ namespace deep {
 
     bool layerIsDual(PlayLayer* layer);
 
-    // which real player a trigger targets: 0 first, 1 second, -1 not a real player of this level
+    // which real player a trigger targets: 0 first, 1 second, -1 when this is not a trigger acting on a real player
+    // (branch stepping, the scan writing the carrier, or the carrier's own update / collisions)
     int realPlayerIndex(GJBaseGameLayer* layer, PlayerObject* player) {
-        if (!g_deepActive || state.isSimulating || g_inCarrierCollision || !layer || !player || layer != PlayLayer::get()) {
+        if (!g_deepActive || state.isSimulating || g_inCarrierCollision || g_inCarrierUpdate || g_deepCarrierWrite || !layer || !player ||
+            layer != PlayLayer::get()) {
             return -1;
         }
         if (player == layer->m_player1) {
@@ -715,22 +717,21 @@ namespace deep {
         return -1;
     }
 
-    void onRealFlip(GJBaseGameLayer* layer, PlayerObject* player, bool flip) {
-        int index = realPlayerIndex(layer, player);
+    // PlayerObject-level hooks: triggers call these on the real players directly (some through inlined GD code)
+    void onRealFlip(PlayerObject* player, bool flip) {
+        int index = realPlayerIndex(PlayLayer::get(), player);
         if (index < 0 || player->m_isUpsideDown == flip) {
             return;
         }
-        pendingEffects.push_back({ index == 1, [layer, flip](PlayerObject* target) { ghostFlipGravity(layer, target, flip); } });
+        pendingEffects.push_back({ index == 1, [flip](PlayerObject* target) { target->flipGravity(flip, true); } });
     }
 
-    void onRealReverse(GJBaseGameLayer* layer, EffectGameObject* object) {
-        if (!g_deepActive || state.isSimulating || g_inCarrierCollision || !object || layer != PlayLayer::get()) {
+    void onRealReverse(PlayerObject* player, bool reversed) {
+        int index = realPlayerIndex(PlayLayer::get(), player);
+        if (index < 0 || player->m_isGoingLeft == reversed) {
             return;
         }
-        pendingEffects.push_back({ false, [object](PlayerObject* target) { target->reversePlayer(object); } });
-        if (layerIsDual(static_cast<PlayLayer*>(layer))) {
-            pendingEffects.push_back({ true, [object](PlayerObject* target) { target->reversePlayer(object); } });
-        }
+        pendingEffects.push_back({ index == 1, [reversed](PlayerObject* target) { target->doReversePlayer(reversed); } });
     }
 
     void onRealTeleport(GJBaseGameLayer* layer, TeleportPortalObject* portal, PlayerObject* player) {
@@ -2513,8 +2514,8 @@ namespace deep {
     bool active() { return false; }
     bool isWorker(PlayerObject*) { return false; }
     void ghostFlipGravity(GJBaseGameLayer*, PlayerObject* player, bool flip) { player->flipGravity(flip, true); }
-    void onRealFlip(GJBaseGameLayer*, PlayerObject*, bool) {}
-    void onRealReverse(GJBaseGameLayer*, EffectGameObject*) {}
+    void onRealFlip(PlayerObject*, bool) {}
+    void onRealReverse(PlayerObject*, bool) {}
     void onRealTeleport(GJBaseGameLayer*, TeleportPortalObject*, PlayerObject*) {}
     void onRealPlayerEvent(PlayerObject*, char const*) {}
     int runtimeBase() { return -1; }

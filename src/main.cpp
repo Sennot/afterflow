@@ -448,6 +448,7 @@ namespace {
     bool g_deepActive = false;
     bool g_inCarrierCollision = false;
     bool g_deepCarrierWrite = false;
+    bool g_inCarrierUpdate = false;
     int g_deepVerdict = 0;
 
     bool deepListHas(std::vector<GameObject*> const& list, GameObject* gameObject) {
@@ -8540,7 +8541,14 @@ class $modify(BufPlayerObject, PlayerObject) {
             state.tickStartPositionX = getPosition().x;
             state.isInRealUpdate = true;
         }
+        bool isCarrier = g_deepActive && gameLayer && (this == gameLayer->m_player1 || this == gameLayer->m_player2);
+        if (isCarrier) {
+            g_inCarrierUpdate = true;
+        }
         PlayerObject::update(deltaTime);
+        if (isCarrier) {
+            g_inCarrierUpdate = false;
+        }
         if (isFirstPlayer) {
             state.isInRealUpdate = false;
             float deltaX = getPosition().x - state.tickStartPositionX;
@@ -8700,9 +8708,16 @@ class $modify(BufPlayerObject, PlayerObject) {
 
     void doReversePlayer(bool isReversed) {
         if (m_isGoingLeft != isReversed) {
-            deep::onRealPlayerEvent(this, isReversed ? "turned left" : "turned right");
+            deep::onRealReverse(this, isReversed);
         }
         PlayerObject::doReversePlayer(isReversed);
+    }
+
+    void flipGravity(bool isFlipped, bool suppressEffects) {
+        if (m_isUpsideDown != isFlipped) {
+            deep::onRealFlip(this, isFlipped);
+        }
+        PlayerObject::flipGravity(isFlipped, suppressEffects);
     }
 
     void startDashing(DashRingObject* dashRing) {
@@ -8978,15 +8993,7 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
             }
             return;
         }
-        deep::onRealFlip(this, playerObject, shouldFlip);
         GJBaseGameLayer::flipGravity(playerObject, shouldFlip, suppressEffects);
-    }
-
-    void reverseDirection(EffectGameObject* effectObject) {
-        GJBaseGameLayer::reverseDirection(effectObject);
-        if (!state.isSimulating) {
-            deep::onRealReverse(this, effectObject);
-        }
     }
 
     void teleportPlayer(TeleportPortalObject* portalObject, PlayerObject* playerObject) {
