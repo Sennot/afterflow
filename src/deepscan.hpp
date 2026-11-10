@@ -79,9 +79,10 @@ namespace deep {
     X(m_affectedByForces) X(m_lastMovedTime) X(m_playerSpeedAC) X(m_fixRobotJump) X(m_inputsLocked) X(m_unkUnused) \
     X(m_isOutOfBounds) X(m_fallStartY) X(m_ignoreDamage) X(m_enable22Changes) X(m_enableImpulseFix)
 
-    // full physics state of one PlayerObject, every member except owned visuals and identity
+    // full physics state of one PlayerObject, every member except owned visuals and identity.
+    // members the bindings in use do not have become a dummy char and are skipped when copying
     struct PState {
-#define AF_DS_DECL(name) std::remove_cvref_t<decltype(std::declval<PlayerObject&>().name)> name{};
+#define AF_DS_DECL(name)         template <class P> static auto typeOf_##name(int) -> std::remove_cvref_t<decltype(std::declval<P&>().name)>;         template <class P> static char typeOf_##name(...);         decltype(typeOf_##name<PlayerObject>(0)) name{};
         AF_DS_SCALARS(AF_DS_DECL)
         AF_DS_DECL(m_rotateObjectsRelated)
         AF_DS_DECL(m_potentialSlopeMap)
@@ -102,8 +103,9 @@ namespace deep {
         std::vector<CCObject*> touchingRings;
     };
 
-    void saveState(PlayerObject* player, PState& out) {
-#define AF_DS_SAVE(name) out.name = player->name;
+    template <class Player>
+    void saveState(Player* player, PState& out) {
+#define AF_DS_SAVE(name)         if constexpr (requires { player->name; }) {             out.name = player->name;         }
         AF_DS_SCALARS(AF_DS_SAVE)
         AF_DS_SAVE(m_rotateObjectsRelated)
         AF_DS_SAVE(m_potentialSlopeMap)
@@ -118,7 +120,9 @@ namespace deep {
         out.rotationY = player->getRotationY();
         out.scaleX = player->getScaleX();
         out.scaleY = player->getScaleY();
-        out.lastPosition = player->m_lastPosition;
+        if constexpr (requires { player->m_lastPosition; }) {
+            out.lastPosition = player->m_lastPosition;
+        }
         out.width = player->m_width;
         out.height = player->m_height;
         out.touchingRings.clear();
@@ -130,7 +134,8 @@ namespace deep {
     }
 
     // GD's own mode toggles first (in copyAttributes order, without effects), then every raw field
-    void loadState(PlayerObject* player, PState const& in) {
+    template <class Player>
+    void loadState(Player* player, PState const& in) {
         if (player->m_isUpsideDown != in.m_isUpsideDown) {
             player->flipGravity(in.m_isUpsideDown, true);
         }
@@ -165,26 +170,38 @@ namespace deep {
             player->togglePlayerScale(in.m_vehicleSize != 1.f, true);
         }
 
-#define AF_DS_LOAD(name) player->name = in.name;
+#define AF_DS_LOAD(name)         if constexpr (requires { player->name; }) {             player->name = in.name;         }
         AF_DS_SCALARS(AF_DS_LOAD)
 #undef AF_DS_LOAD
-        if (!player->m_rotateObjectsRelated.empty() || !in.m_rotateObjectsRelated.empty()) {
-            player->m_rotateObjectsRelated = in.m_rotateObjectsRelated;
+        if constexpr (requires { player->m_rotateObjectsRelated; }) {
+            if (!player->m_rotateObjectsRelated.empty() || !in.m_rotateObjectsRelated.empty()) {
+                player->m_rotateObjectsRelated = in.m_rotateObjectsRelated;
+            }
         }
-        if (!player->m_potentialSlopeMap.empty() || !in.m_potentialSlopeMap.empty()) {
-            player->m_potentialSlopeMap = in.m_potentialSlopeMap;
+        if constexpr (requires { player->m_potentialSlopeMap; }) {
+            if (!player->m_potentialSlopeMap.empty() || !in.m_potentialSlopeMap.empty()) {
+                player->m_potentialSlopeMap = in.m_potentialSlopeMap;
+            }
         }
-        if (player->m_ringRelatedSet != in.m_ringRelatedSet) {
-            player->m_ringRelatedSet = in.m_ringRelatedSet;
+        if constexpr (requires { player->m_ringRelatedSet; }) {
+            if (player->m_ringRelatedSet != in.m_ringRelatedSet) {
+                player->m_ringRelatedSet = in.m_ringRelatedSet;
+            }
         }
-        if (player->m_touchedRings != in.m_touchedRings) {
-            player->m_touchedRings = in.m_touchedRings;
+        if constexpr (requires { player->m_touchedRings; }) {
+            if (player->m_touchedRings != in.m_touchedRings) {
+                player->m_touchedRings = in.m_touchedRings;
+            }
         }
-        if (player->m_playerFollowFloats != in.m_playerFollowFloats) {
-            player->m_playerFollowFloats = in.m_playerFollowFloats;
+        if constexpr (requires { player->m_playerFollowFloats; }) {
+            if (player->m_playerFollowFloats != in.m_playerFollowFloats) {
+                player->m_playerFollowFloats = in.m_playerFollowFloats;
+            }
         }
-        if (player->m_jumpPadRelated != in.m_jumpPadRelated) {
-            player->m_jumpPadRelated = in.m_jumpPadRelated;
+        if constexpr (requires { player->m_jumpPadRelated; }) {
+            if (player->m_jumpPadRelated != in.m_jumpPadRelated) {
+                player->m_jumpPadRelated = in.m_jumpPadRelated;
+            }
         }
         if (player->m_holdingButtons != in.m_holdingButtons) {
             player->m_holdingButtons = in.m_holdingButtons;
@@ -195,11 +212,15 @@ namespace deep {
         player->setRotationY(in.rotationY);
         player->setScaleX(in.scaleX);
         player->setScaleY(in.scaleY);
-        player->m_lastPosition = in.lastPosition;
+        if constexpr (requires { player->m_lastPosition; }) {
+            player->m_lastPosition = in.lastPosition;
+        }
         player->m_width = in.width;
         player->m_height = in.height;
         player->m_isObjectRectDirty = true;
-        player->m_isOrientedBoxDirty = true;
+        if constexpr (requires { player->m_isOrientedBoxDirty; }) {
+            player->m_isOrientedBoxDirty = true;
+        }
 
         if (auto* rings = player->m_touchingRings) {
             bool same = rings->count() == in.touchingRings.size();
@@ -213,6 +234,16 @@ namespace deep {
                 }
             }
         }
+    }
+
+    // members of the list the compiled bindings do not have (they are not copied between branches)
+    template <class Player>
+    std::vector<char const*> missingFields() {
+        std::vector<char const*> missing;
+#define AF_DS_MISSING(name)         if constexpr (!requires(Player* player) { player->name; }) {             missing.push_back(#name);         }
+        AF_DS_SCALARS(AF_DS_MISSING)
+#undef AF_DS_MISSING
+        return missing;
     }
 
     bool holdsJump(PlayerObject* player) {
@@ -624,7 +655,11 @@ namespace deep {
         worker->retain();
         worker->setVisible(false);
         worker->m_playEffects = false;
-        worker->m_isSecondPlayer = second;
+        [second](auto* target) {
+            if constexpr (requires { target->m_isSecondPlayer; }) {
+                target->m_isSecondPlayer = second;
+            }
+        }(worker);
         worker->unscheduleUpdate();
         worker->stopAllActions();
         workerLayer->addChild(worker);
@@ -1196,7 +1231,7 @@ namespace deep {
         }
         std::erase_if(objects, [x](GameObject* object) { return object->getPositionX() < x - 240.f; });
         if (objects.size() > MAX_USED) {
-            objects.erase(objects.begin(), objects.begin() + static_cast<long>(objects.size() - MAX_USED));
+            objects.erase(objects.begin(), objects.begin() + static_cast<std::ptrdiff_t>(objects.size() - MAX_USED));
         }
     }
 
@@ -1943,6 +1978,15 @@ namespace deep {
         createViz(layer);
         showHud(layer);
         log(fmt::format("scan started | level {} | beam {} | budget {:.0f}ms", scan.levelID, scan.beamWidth, scan.budgetMs));
+        auto missing = missingFields<PlayerObject>();
+        if (!missing.empty()) {
+            std::string names;
+            for (auto const* name : missing) {
+                names += names.empty() ? "" : " ";
+                names += name;
+            }
+            log(fmt::format("{} player fields are not in these bindings: {}", missing.size(), names));
+        }
     }
 
     void requestStop(bool abortScan) {
