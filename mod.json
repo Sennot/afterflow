@@ -117,7 +117,7 @@
       "type": "int",
       "name": "beam width",
       "description": "branches kept per tick. more is slower and covers more states",
-      "default": 384,
+      "default": 768,
       "min": 16,
       "max": 4000,
       "platforms": [

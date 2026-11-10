@@ -8003,6 +8003,10 @@ class $modify(BufPlayLayer, PlayLayer) {
         if (deep::blockRealDeath(this, playerObject, gameObject)) {
             return;
         }
+        // GD drops the anticheat spike on the real player until damage is verified; ghosts copied from the player sit on it
+        if ((state.isSimulating || isGhost(playerObject)) && gameObject && gameObject == this->m_anticheatSpike) {
+            return;
+        }
         if (state.isSimulating || isGhost(playerObject)) {
             if (state.isSimulating) {
                 state.hasGhostDied = true;

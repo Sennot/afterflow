@@ -581,7 +581,7 @@ namespace deep {
         bool wasDual = false;
         bool finishing = false;
         int speedMode = 2;
-        int beamWidth = 384;
+        int beamWidth = 768;
         double budgetMs = 18.0;
         bool swarm = true;
         PlayLayer* layer = nullptr;
@@ -789,6 +789,11 @@ namespace deep {
     }
 
     void onResetLevel() {
+        if (runtime.lookups >= 64) {
+            log(fmt::format("map used: {} lookups, {:.0f}% known", runtime.lookups, 100.0 * static_cast<double>(runtime.hits) / static_cast<double>(runtime.lookups)));
+        }
+        runtime.lookups = 0;
+        runtime.hits = 0;
         runtime.synced = false;
         runtime.rtTick = 0;
     }
@@ -955,17 +960,17 @@ namespace deep {
                 addChild(m_frame, 0);
             }
             ccColor3B text = getUITextColor();
-            m_title = hudLabel("DEEP SCAN", true, 0.15f, accentColor());
-            m_status = hudLabel("", false, 0.2f, text);
+            m_title = hudLabel("DEEP SCAN", true, 0.55f, accentColor());
+            m_status = hudLabel("", false, 0.7f, text);
             for (auto*& line : m_lines) {
-                line = hudLabel("", false, 0.19f, softTextColor());
+                line = hudLabel("", false, 0.68f, softTextColor());
                 if (line) {
                     line->setAnchorPoint(CCPoint(0.f, 0.5f));
                     addChild(line, 2);
                 }
             }
             for (int index = 0; index < BUTTON_COUNT; ++index) {
-                m_buttonLabels[index] = hudLabel(BUTTON_TEXT[index], false, 0.18f, text);
+                m_buttonLabels[index] = hudLabel(BUTTON_TEXT[index], false, 0.62f, text);
                 if (m_buttonLabels[index]) {
                     addChild(m_buttonLabels[index], 3);
                 }
