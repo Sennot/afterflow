@@ -796,6 +796,7 @@ namespace deep {
     }
 
     void onLevelInit(PlayLayer* layer) {
+        destroyWorkers();
         readSettings();
         runtime.table.reset();
         runtime.synced = false;
@@ -1604,6 +1605,8 @@ namespace deep {
             scan.link1[previousBegin + index] = toggleChild < 0 ? LINK_DEAD : static_cast<uint16_t>(toggleChild);
         }
         clearSimulationWaves(layer);
+        g_deepWorker1->stopAllActions();
+        g_deepWorker2->stopAllActions();
         g_deepStep.stepping = false;
         g_deepStep.used.clear();
         g_deepStep.orbs.clear();
@@ -1869,7 +1872,8 @@ namespace deep {
         scan.pristine.clear();
         scan.pristineSeen.clear();
         clearViz();
-        destroyWorkers();
+        // the branch players stay until the level closes: GD keeps raw pointers to players (trails, particles) that only go
+        // away with the level, the same lifetime afterflow's own ghosts have
 
         if (keep) {
             scan.finishing = true;
@@ -1974,9 +1978,11 @@ namespace deep {
         scan.levelLength = layer->m_levelLength;
         scan.resultText.clear();
 
-        destroyWorkers();
-        g_deepWorker1 = makeWorker(layer, false);
-        g_deepWorker2 = makeWorker(layer, true);
+        if (!g_deepWorker1 || !g_deepWorker2) {
+            destroyWorkers();
+            g_deepWorker1 = makeWorker(layer, false);
+            g_deepWorker2 = makeWorker(layer, true);
+        }
         if (!g_deepWorker1 || !g_deepWorker2) {
             destroyWorkers();
             log("could not create the branch players");
