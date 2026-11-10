@@ -40,6 +40,8 @@ namespace deep {
     constexpr float X_MATCH = 2.5f;
     constexpr float X_LOOKUP = 8.f;
     constexpr size_t MAX_USED = 24;
+    constexpr size_t STALL_TICKS = 2400;
+    constexpr size_t MAX_SCAN_TICKS = 240 * 60 * 20;
 
     enum : uint8_t { FATE_UNKNOWN = 0, FATE_VIABLE = 1, FATE_DEAD = 2, FATE_FRONTIER = 3 };
     enum : uint8_t { TICK_GAP = 1, TICK_DUAL = 2, TICK_RESEED = 4 };
@@ -657,6 +659,8 @@ namespace deep {
         int levelID = 0;
         uint64_t levelHash = 0;
         int parityLogged = 0;
+        float stallX = 0.f;
+        size_t stallTick = 0;
 
         std::vector<Pristine> pristine;
         std::unordered_set<GameObject*> pristineSeen;
@@ -1611,19 +1615,21 @@ namespace deep {
         g_deepStep.stepping = true;
         for (size_t index = 0; index < analysis.nextCount; ++index) {
             Node& node = analysis.next[index];
-            if (flip) {
+            if (flip || speed || reverse) {
                 loadState(worker, node.first);
-                worker->flipGravity(!worker->m_isUpsideDown, true);
+                if (flip) {
+                    worker->flipGravity(!worker->m_isUpsideDown, true);
+                }
+                if (speed) {
+                    worker->updateTimeMod(real->m_playerSpeed, true);
+                }
+                if (reverse && worker->m_isGoingLeft != real->m_isGoingLeft) {
+                    worker->doReversePlayer(real->m_isGoingLeft);
+                }
                 saveState(worker, node.first);
             }
             if (gravityMod) {
                 node.first.m_gravityMod = real->m_gravityMod;
-            }
-            if (speed) {
-                node.first.m_playerSpeed = real->m_playerSpeed;
-            }
-            if (reverse) {
-                node.first.m_isGoingLeft = real->m_isGoingLeft;
             }
             if (teleport) {
                 node.first.nodePos = node.first.nodePos + jump;
@@ -1826,6 +1832,21 @@ namespace deep {
         scan.nextCount = 0;
 
         scan.lastStepMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stepStart).count();
+
+        // a noclip carrier can get stuck (walls in reverse parts, closed gaps): stop instead of scanning one spot forever
+        size_t tickCount = scan.ticks.size();
+        if (std::abs(carrierX - scan.stallX) > 30.f) {
+            scan.stallX = carrierX;
+            scan.stallTick = tickCount;
+        }
+        else if (tickCount - scan.stallTick > STALL_TICKS) {
+            log(fmt::format("the carrier has not moved for {} ticks at x {:.0f}, stopping the scan", STALL_TICKS, carrierX));
+            requestStop(false);
+        }
+        if (tickCount > MAX_SCAN_TICKS) {
+            log(fmt::format("scan reached the {} tick limit, stopping", MAX_SCAN_TICKS));
+            requestStop(false);
+        }
         float span = std::max(1.f, scan.levelLength - scan.startX);
         int decile = static_cast<int>(std::clamp((carrierX - scan.startX) / span, 0.f, 0.999f) * 10.f);
         if (decile != scan.lastProgressDecile) {
@@ -2103,6 +2124,8 @@ namespace deep {
         std::swap(scan.currentCount, scan.nextCount);
         scan.nextCount = 0;
         scan.carrierUpdates = scan.lastStepped = 0;
+        scan.stallX = scan.startX;
+        scan.stallTick = 0;
         scan.startTime = scan.rateTime = std::chrono::steady_clock::now();
         scan.rateTicks = 0;
         scan.ticksPerSecond = 0.0;
