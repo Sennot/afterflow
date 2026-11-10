@@ -678,6 +678,7 @@ namespace deep {
         float stallX = 0.f;
         size_t stallTick = 0;
         uint8_t pendingFlags = 0;
+        int recentGaps = 0;
 
         std::vector<Pristine> pristine;
         std::unordered_set<GameObject*> pristineSeen;
@@ -738,6 +739,23 @@ namespace deep {
             return;
         }
         pendingEffects.push_back({ index == 1, [layer, portal](PlayerObject* target) { layer->teleportPlayer(portal, target); } });
+    }
+
+    int foreignLogged = 0;
+    uint64_t foreignInputs = 0;
+
+    // something other than the scan pressed a button or turned the real player around during a scan
+    void onRealPlayerEvent(PlayerObject* player, char const* what) {
+        auto* layer = PlayLayer::get();
+        if (!g_deepActive || state.isSimulating || !layer || (player != layer->m_player1 && player != layer->m_player2) || g_deepCarrierWrite) {
+            return;
+        }
+        ++foreignInputs;
+        if (foreignLogged < 12) {
+            ++foreignLogged;
+            log(fmt::format("{} on the real player at tick {} (x {:.1f}){}", what, analysis.ticks.size(), player->getPositionX(),
+                g_inCarrierCollision ? " during its collisions" : ""));
+        }
     }
 
     void replayPendingEffects() {
@@ -1945,10 +1963,12 @@ namespace deep {
             lead.key = nodeKey(lead);
         }
         else if ((flags & (TICK_GAP | TICK_RESEED)) == 0) {
+            g_deepCarrierWrite = true;
             loadState(layer->m_player1, lead.first);
             if (lead.dual && layer->m_player2) {
                 loadState(layer->m_player2, lead.second);
             }
+            g_deepCarrierWrite = false;
             ++scan.syncs;
         }
 
@@ -1974,6 +1994,20 @@ namespace deep {
         else if (tickCount - scan.stallTick > STALL_TICKS) {
             log(fmt::format("the carrier has not moved for {} ticks at x {:.0f}, stopping the scan", STALL_TICKS, carrierX));
             requestStop(false);
+        }
+        if (carrierX < scan.startX - 600.f) {
+            log(fmt::format("the carrier left the level (x {:.0f}), stopping the scan", carrierX));
+            requestStop(false);
+        }
+        if (flags & TICK_GAP) {
+            ++scan.recentGaps;
+        }
+        if (tickCount % 1200 == 0) {
+            if (scan.recentGaps > 900) {
+                log(fmt::format("{} of the last 1200 ticks had no surviving branch, stopping the scan", scan.recentGaps));
+                requestStop(false);
+            }
+            scan.recentGaps = 0;
         }
         if (tickCount > MAX_SCAN_TICKS) {
             log(fmt::format("scan reached the {} tick limit, stopping", MAX_SCAN_TICKS));
@@ -2126,9 +2160,9 @@ namespace deep {
         job->link0 = std::move(scan.link0);
         job->link1 = std::move(scan.link1);
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - scan.startTime).count();
-        log(fmt::format("scan {} after {} ticks in {} | gaps {} | restarts {} | parity breaks {} (worst {:.4f}) | syncs {} | trigger effects {} | {} branches",
+        log(fmt::format("scan {} after {} ticks in {} | gaps {} | restarts {} | parity breaks {} (worst {:.4f}) | syncs {} | trigger effects {} | foreign inputs {} | {} branches",
             scan.abort ? "aborted" : scan.reachedEnd ? "reached the end" : "stopped", job->ticks.size(), clockText(elapsed), scan.gaps, scan.reseeds,
-            scan.parityBreaks, scan.parityWorst, scan.syncs, replayedEffects, scan.expansions));
+            scan.parityBreaks, scan.parityWorst, scan.syncs, replayedEffects, foreignInputs, scan.expansions));
 
         scan.active = false;
         g_deepActive = false;
@@ -2233,6 +2267,8 @@ namespace deep {
         scan.pristineSeen.clear();
         pendingEffects.clear();
         replayedEffects = 0;
+        foreignLogged = 0;
+        foreignInputs = 0;
         scan.expansions = scan.deaths = 0;
         scan.gaps = scan.reseeds = scan.parityBreaks = scan.syncs = 0;
         scan.parityWorst = 0.0;
@@ -2286,6 +2322,7 @@ namespace deep {
         scan.carrierUpdates = scan.lastStepped = 0;
         scan.stallX = scan.startX;
         scan.stallTick = 0;
+        scan.recentGaps = 0;
         scan.startTime = scan.rateTime = std::chrono::steady_clock::now();
         scan.rateTicks = 0;
         scan.ticksPerSecond = 0.0;
@@ -2479,6 +2516,7 @@ namespace deep {
     void onRealFlip(GJBaseGameLayer*, PlayerObject*, bool) {}
     void onRealReverse(GJBaseGameLayer*, EffectGameObject*) {}
     void onRealTeleport(GJBaseGameLayer*, TeleportPortalObject*, PlayerObject*) {}
+    void onRealPlayerEvent(PlayerObject*, char const*) {}
     int runtimeBase() { return -1; }
     int label(int, PlayerObject*, PlayerObject*, bool, bool) { return 0; }
     void onLevelInit(PlayLayer*) {}

@@ -447,6 +447,7 @@ namespace {
     PlayerObject* g_deepWorker2 = nullptr;
     bool g_deepActive = false;
     bool g_inCarrierCollision = false;
+    bool g_deepCarrierWrite = false;
     int g_deepVerdict = 0;
 
     bool deepListHas(std::vector<GameObject*> const& list, GameObject* gameObject) {
@@ -8685,6 +8686,23 @@ class $modify(BufPlayerObject, PlayerObject) {
             return;
         }
         PlayerObject::ringJump(ringObject, skipCollisionCheck);
+    }
+
+    bool pushButton(PlayerButton button) {
+        deep::onRealPlayerEvent(this, "button press");
+        return PlayerObject::pushButton(button);
+    }
+
+    bool releaseButton(PlayerButton button) {
+        deep::onRealPlayerEvent(this, "button release");
+        return PlayerObject::releaseButton(button);
+    }
+
+    void doReversePlayer(bool isReversed) {
+        if (m_isGoingLeft != isReversed) {
+            deep::onRealPlayerEvent(this, isReversed ? "turned left" : "turned right");
+        }
+        PlayerObject::doReversePlayer(isReversed);
     }
 
     void startDashing(DashRingObject* dashRing) {
