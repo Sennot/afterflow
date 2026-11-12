@@ -8843,6 +8843,12 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
                 if (objectType < 64 && (DEEP_SKIPPED_TYPES >> objectType) & 1) {
                     continue;
                 }
+                // GD applies speed portals outside collisionCheckObjects, branches have to take them here
+                float deepSpeed = speedPortalValue(gameObject->m_objectID);
+                if (deepSpeed > 0.f && std::abs(playerObject->m_playerSpeed - deepSpeed) > 1e-4f &&
+                    playerObject->getObjectRect().intersectsRect(gameObject->getObjectRect())) {
+                    playerObject->updateTimeMod(deepSpeed, true);
+                }
                 relevantObjects.push_back(gameObject);
             }
             GJBaseGameLayer::collisionCheckObjects(playerObject, &relevantObjects, static_cast<int>(relevantObjects.size()), deltaTime);
