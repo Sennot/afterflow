@@ -1450,7 +1450,26 @@ finally {
         return true;
     }
 
+    // toggle: the current stage goes to "off", pressing again brings the same stage back
+    void toggleStage() {
+        constexpr int OFF_STAGE = STAGE_TABLE_SIZE - 1;
+        if (stageEnabledAt(state.stageIndex)) {
+            Mod::get()->setSavedValue("stage-before-toggle", state.stageIndex);
+            setStageIndex(OFF_STAGE);
+        }
+        else {
+            int previous = Mod::get()->getSavedValue<int>("stage-before-toggle", 0);
+            setStageIndex(stageEnabledAt(previous) ? previous : 0);
+        }
+    }
+
     void setupKeybinds() {
+        listenForKeybindSettingPresses("keybind-toggle", [](Keybind const&, bool isDown, bool isRepeat, double) {
+            if (isDown && !isRepeat) {
+                toggleStage();
+            }
+            return true;
+        });
         listenForKeybindSettingPresses(KEYBIND_STAGE, [](Keybind const&, bool isDown, bool isRepeat, double) {
             if (isDown && !isRepeat) {
                 cycleStage(1);

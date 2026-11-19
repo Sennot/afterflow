@@ -68,6 +68,19 @@
         "mac"
       ]
     },
+    "keybind-toggle": {
+      "type": "keybind",
+      "name": "toggle buffer",
+      "description": "turn the current stage off, press again to bring it back",
+      "category": "gameplay",
+      "default": [
+        "F4"
+      ],
+      "platforms": [
+        "win",
+        "mac"
+      ]
+    },
     "keybind-terminal": {
       "type": "keybind",
       "name": "control panel",
