@@ -13,6 +13,11 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 project(Afterflow VERSION 2.2.8)
 
+# the windows runner's MSVC STL now asks for Clang 22 while the action ships an older clang
+if (WIN32)
+    add_compile_definitions(_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+endif()
+
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
